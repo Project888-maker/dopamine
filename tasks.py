@@ -1,0 +1,305 @@
+"""
+tasks.py — full pipeline chain with build fixes
+Saves output to /home/ubuntu/pipeline/runs/<timestamp>/
+"""
+
+import os
+import re
+import json
+import time
+import logging
+from datetime import datetime, date
+from celery import Celery, chain
+from openai import OpenAI
+
+from prompts import get_prompt
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+REDIS_URL = "redis://localhost:6379/0"
+OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+RUNS_DIR = "/home/ubuntu/pipeline/runs"
+
+app = Celery("pipeline", broker=REDIS_URL, backend=REDIS_URL)
+app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    task_track_started=True,
+    task_acks_late=True,
+    worker_max_tasks_per_child=10,
+)
+
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_KEY,
+)
+
+MODELS = {
+    "research":   "perplexity/sonar",
+    "brainstorm": "moonshotai/kimi-k2",
+    "architect":  "anthropic/claude-sonnet-4-5",
+    "build":      "anthropic/claude-sonnet-4-5",   # was kimi-k2 - now more reliable
+    "review":     "anthropic/claude-haiku-4.5",
+    "report":     "google/gemini-2.5-flash",
+}
+
+MAX_PROJECTS_PER_RUN = 3  # Start small. Scale up later.
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def call_llm(role: str, system: str, user: str, temperature: float = 0.5, max_tokens: int = 4096) -> str:
+    # Build needs more tokens to write full files without truncation
+    if role == "build":
+        max_tokens = 12000
+    response = client.chat.completions.create(
+        model=MODELS[role],
+        temperature=temperature,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ],
+    )
+    return response.choices[0].message.content.strip()
+
+
+def parse_json(raw: str):
+    clean = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r'[\x00-\x1f\x7f]', '', clean)
+        return json.loads(cleaned)
+
+
+def parse_build_output(raw: str) -> dict:
+    clean = raw.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        pass
+    try:
+        cleaned = re.sub(r'[\x00-\x1f\x7f]', '', clean)
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    files = {}
+    pattern = r'"([^"]+\.(?:py|txt|html|md|js|json|env|yaml|yml|toml|css))"\s*:\s*"((?:[^"\\]|\\.)*)"'
+    matches = re.findall(pattern, clean, re.DOTALL)
+    if matches:
+        for fname, content in matches:
+            content = (content
+                .replace("\\n", "\n").replace("\\t", "\t")
+                .replace('\\"', '"').replace("\\\\", "\\"))
+            files[fname] = content
+        return files
+    raise ValueError("Build output parse failed")
+
+
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+
+@app.task(name="pipeline.research")
+def research_task(payload):
+    logger.info("🔍 RESEARCH agent starting")
+    topic = payload.get("topic", "AI tools, SaaS micro-products, developer utilities")
+    system, user = get_prompt("research", topic=topic, date=str(date.today()))
+    raw = call_llm("research", system, user, temperature=0.5)
+    trends = parse_json(raw)
+    payload["raw_trends"] = trends
+    logger.info(f"   → {len(trends)} trends found")
+    return payload
+
+
+@app.task(name="pipeline.brainstorm")
+def brainstorm_task(payload):
+    logger.info("💡 BRAINSTORM agent starting")
+    system, user = get_prompt("brainstorm", trends=json.dumps(payload["raw_trends"], indent=2))
+    raw = call_llm("brainstorm", system, user, temperature=0.8)
+    ideas = parse_json(raw)
+    payload["ideas"] = ideas[:MAX_PROJECTS_PER_RUN]
+    logger.info(f"   → {len(payload['ideas'])} ideas selected (capped at {MAX_PROJECTS_PER_RUN})")
+    return payload
+
+
+@app.task(name="pipeline.architect")
+def architect_task(payload):
+    logger.info("🏗️  ARCHITECT agent starting")
+    specs = []
+    for i, idea in enumerate(payload["ideas"], 1):
+        logger.info(f"   [{i}/{len(payload['ideas'])}] {idea['title']}")
+        system, user = get_prompt("architect",
+            title=idea["title"],
+            description=idea["description"],
+            stack=idea["stack"],
+            why_now=idea["why_now"],
+            monetisation=idea["monetisation"],
+        )
+        raw = call_llm("architect", system, user, temperature=0.3)
+        try:
+            spec = parse_json(raw)
+            spec["idea"] = idea
+            specs.append(spec)
+        except Exception as e:
+            logger.warning(f"   ⚠️  Spec failed for {idea['title']}: {e}")
+    payload["specs"] = specs
+    logger.info(f"   → {len(specs)} specs produced")
+    return payload
+
+
+@app.task(name="pipeline.build")
+def build_task(payload):
+    logger.info("🔨 BUILD agent starting")
+    builds = []
+    for i, spec in enumerate(payload["specs"], 1):
+        idea = spec["idea"]
+        logger.info(f"   [{i}/{len(payload['specs'])}] Building {idea['title']}")
+        system, user = get_prompt("build",
+            title=idea["title"],
+            description=idea["description"],
+            stack=idea["stack"],
+            file_structure=json.dumps(spec["file_structure"]),
+            endpoints=json.dumps(spec.get("endpoints", [])),
+            key_logic=spec["key_logic"],
+            env_vars=json.dumps(spec.get("env_vars", [])),
+            deploy_target=spec.get("deploy_target", "ec2"),
+            rebuild_context="",
+        )
+        try:
+            raw = call_llm("build", system, user, temperature=0.2)
+            files = parse_build_output(raw)
+            builds.append({"spec": spec, "files": files, "approved": False})
+            logger.info(f"   ✅ Built {idea['title']} ({sum(len(c.splitlines()) for c in files.values())} lines)")
+        except Exception as e:
+            logger.warning(f"   ❌ Build failed for {idea['title']}: {e}")
+    payload["builds"] = builds
+    logger.info(f"   → {len(builds)} projects built")
+    return payload
+
+
+@app.task(name="pipeline.review")
+def review_task(payload):
+    logger.info("🔎 REVIEW agent starting")
+    for i, build in enumerate(payload["builds"], 1):
+        title = build["spec"]["idea"]["title"]
+        logger.info(f"   [{i}/{len(payload['builds'])}] Reviewing {title}")
+
+        files_preview = {}
+        for k, v in build["files"].items():
+            if k == "main.py" or k.endswith(".py") and not files_preview.get("main.py"):
+                files_preview[k] = v
+            else:
+                files_preview[k] = v[:500]
+
+        system, user = get_prompt("review",
+            title=title,
+            stack=build["spec"]["idea"]["stack"],
+            files_preview=json.dumps(files_preview, indent=2),
+        )
+        try:
+            raw = call_llm("review", system, user, temperature=0.1)
+            result = parse_json(raw)
+            build["review"] = result
+            build["approved"] = bool(result.get("pass"))
+            status = "✅ PASS" if build["approved"] else "❌ FAIL"
+            logger.info(f"   {status}: {title}")
+        except Exception as e:
+            logger.warning(f"   ⚠️  Review failed for {title}: {e}")
+            build["approved"] = False
+    approved = sum(1 for b in payload["builds"] if b["approved"])
+    logger.info(f"   → {approved}/{len(payload['builds'])} approved")
+    return payload
+
+
+@app.task(name="pipeline.save")
+def save_task(payload):
+    logger.info("💾 SAVE agent starting")
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(RUNS_DIR, run_id)
+    os.makedirs(run_dir, exist_ok=True)
+
+    with open(os.path.join(run_dir, "_payload.json"), "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+    for build in payload.get("builds", []):
+        title = build["spec"]["idea"]["title"]
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40]
+        status = "approved" if build["approved"] else "rejected"
+        proj_dir = os.path.join(run_dir, f"{status}_{slug}")
+        os.makedirs(proj_dir, exist_ok=True)
+
+        for fname, content in build["files"].items():
+            fpath = os.path.join(proj_dir, fname)
+            os.makedirs(os.path.dirname(fpath) if "/" in fname else proj_dir, exist_ok=True)
+            with open(fpath, "w") as f:
+                f.write(content)
+
+        if "review" in build:
+            with open(os.path.join(proj_dir, "_review.json"), "w") as f:
+                json.dump(build["review"], f, indent=2)
+
+    payload["run_dir"] = run_dir
+    logger.info(f"   → Saved to {run_dir}")
+    return payload
+
+
+@app.task(name="pipeline.report")
+def report_task(payload):
+    logger.info("📋 REPORT agent starting")
+    builds = payload.get("builds", [])
+    approved = [b for b in builds if b["approved"]]
+    rejected = [b for b in builds if not b["approved"]]
+
+    print("\n" + "="*60)
+    print(f"🏭 PIPELINE RUN COMPLETE")
+    print("="*60)
+    print(f"📍 Output:   {payload.get('run_dir', 'N/A')}")
+    print(f"📊 Built:    {len(builds)}")
+    print(f"✅ Approved: {len(approved)}")
+    print(f"❌ Rejected: {len(rejected)}")
+    print("="*60)
+    print("\n🚀 APPROVED PROJECTS:")
+    for b in approved:
+        print(f"   • {b['spec']['idea']['title']}")
+    print("\n❌ REJECTED PROJECTS:")
+    for b in rejected:
+        verdict = b.get("review", {}).get("verdict", "no verdict")
+        print(f"   • {b['spec']['idea']['title']}")
+        print(f"     → {verdict}")
+    print("="*60 + "\n")
+
+    # Send Telegram notification
+    try:
+        from telegram_bot import send_pipeline_complete_notification
+        send_pipeline_complete_notification(payload)
+        logger.info("📨 Telegram notification sent")
+    except Exception as e:
+        logger.warning(f"⚠️  Telegram notification failed: {e}")
+
+    return payload
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def run_pipeline(topic=None):
+    initial_payload = {"topic": topic or "AI tools, SaaS, developer utilities"}
+    pipeline = chain(
+        research_task.s(initial_payload),
+        brainstorm_task.s(),
+        architect_task.s(),
+        build_task.s(),
+        review_task.s(),
+        save_task.s(),
+        report_task.s(),
+    )
+    result = pipeline.apply_async()
+    logger.info(f"🚀 Pipeline launched — task ID: {result.id}")
+    return result
+
+
+if __name__ == "__main__":
+    run_pipeline()
