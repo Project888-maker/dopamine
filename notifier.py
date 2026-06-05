@@ -47,15 +47,61 @@ def _deploy_line(build: dict) -> tuple[str, str, str]:
     return ("yes" if eligible else "no", live_url or "none", reason)
 
 
+def _score_line(build: dict) -> str:
+    review = build.get("review", {})
+    quality_score = review.get("quality_score", "N/A")
+    score_breakdown = review.get("score_breakdown", {})
+    if isinstance(score_breakdown, dict):
+        parts = []
+        for k, v in score_breakdown.items():
+            parts.append(f"{k}={v}")
+        breakdown_str = ", ".join(parts) if parts else "N/A"
+    else:
+        breakdown_str = "N/A"
+    return f"Quality: {quality_score} ({breakdown_str})"
+
+
+def _rejection_reason(build: dict) -> str:
+    review = build.get("review", {}) if isinstance(build.get("review"), dict) else {}
+    issues = [str(i) for i in review.get("issues", []) if i]
+
+    quality_score = review.get("quality_score")
+    quality_gate = isinstance(quality_score, (int, float)) and quality_score < 75
+    if any("quality_score" in issue.lower() and "below 75" in issue.lower() for issue in issues):
+        quality_gate = True
+
+    guardrail_markers = (
+        "generated ",
+        "simple_static allows at most",
+        "forbidden simple_static stack term",
+        "generated package.json",
+        "forbidden in simple_static",
+    )
+    guardrail_gate = any(any(marker in issue.lower() for marker in guardrail_markers) for issue in issues)
+
+    if guardrail_gate and quality_gate:
+        return "line/file guardrails + quality"
+    if guardrail_gate:
+        return "line/file guardrails"
+    if quality_gate:
+        return "quality"
+    return "other"
+
+
 def _project_line(build: dict) -> str:
     spec = build.get("spec", {})
     idea = spec.get("idea", {})
-    title = idea.get("title", "Untitled")
+    title = idea.get("title", "Untitled") if isinstance(idea, dict) else "Untitled"
     deploy_eligible, live_url, deploy_reason = _deploy_line(build)
     verdict = build.get("review", {}).get("verdict", "no verdict")
+    score_info = _score_line(build)
+    rejection_label = ""
+    if not build.get("approved"):
+        rejection_label = f"\n  Rejection type: {_rejection_reason(build)}"
     return (
         f"• {title}\n"
         f"  Type: {spec.get('project_type', 'unknown')}\n"
+        f"  {score_info}\n"
         f"  Folder: {build.get('folder_path') or 'not saved'}\n"
         f"  Files: {_generated_files(build)}\n"
         f"  Env: {_env_vars(spec)}\n"
@@ -66,6 +112,7 @@ def _project_line(build: dict) -> str:
         f"  Live URL: {live_url}\n"
         f"  Not deployed reason: {deploy_reason}\n"
         f"  Verdict: {verdict}"
+        f"{rejection_label}"
     )
 
 
@@ -74,12 +121,33 @@ def build_pipeline_summary(payload: dict) -> str:
     approved = [b for b in builds if b.get("approved")]
     rejected = [b for b in builds if not b.get("approved")]
 
+    niche = payload.get("niche", "")
+    goal = payload.get("goal", "")
+    generation_mode = payload.get("generation_mode", "simple_static")
+    selected_idea = payload.get("selected_idea", {})
+    no_build_reason = payload.get("no_build_reason", "")
+
+    # Backward compat: if no niche, fall back to topic-only display
+    if niche:
+        header = f"🎯 Niche: {niche}\n🎯 Goal: {goal}\n📦 Mode: {generation_mode}"
+    else:
+        header = f"📦 Topic: {payload.get('topic', 'N/A')}\n📦 Mode: {generation_mode}"
+
     lines = [
         "🏭 Dopamine pipeline complete",
+        header,
         f"Output: {payload.get('run_dir', 'N/A')}",
-        f"Topic: {payload.get('topic', 'N/A')}",
-        f"Built: {len(builds)} | Approved: {len(approved)} | Rejected: {len(rejected)}",
     ]
+
+    if selected_idea and isinstance(selected_idea, dict):
+        title = selected_idea.get("title", "Untitled")
+        total_score = selected_idea.get("total_score", "N/A")
+        lines.append(f"⭐ Selected: {title} (score: {total_score})")
+
+    if no_build_reason:
+        lines.append(f"❌ No build: {no_build_reason}")
+
+    lines.append(f"Built: {len(builds)} | Approved: {len(approved)} | Rejected: {len(rejected)}")
 
     if approved:
         lines.append("\n✅ Approved:")
@@ -91,7 +159,7 @@ def build_pipeline_summary(payload: dict) -> str:
         for build in rejected:
             lines.append(_project_line(build))
 
-    if not builds:
+    if not builds and not no_build_reason:
         lines.append("\nNo projects were built.")
 
     return "\n".join(lines)[:3900]
