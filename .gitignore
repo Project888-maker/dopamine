@@ -6,3 +6,5 @@ runs/
 test_output/
 .env.*
 !.env.example
+
+.venv/
