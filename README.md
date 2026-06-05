@@ -154,3 +154,22 @@ runs/
 test_output/
 __pycache__/
 ```
+
+## Approved project reports
+
+Every completed run writes `_report.txt` in the run directory and sends the same summary to Telegram when reporting credentials are configured. For each approved project the report includes:
+
+- project type
+- folder path
+- generated files
+- required environment variables
+- install command
+- run command
+- test command
+- deploy eligibility
+- live URL when a deploy step attaches one
+- reason when the project was not auto-deployed
+
+Telegram bot projects are not auto-deployed. Their reports show the required environment variables and run command instead. Generated Telegram bot projects must use `PROJECT_TELEGRAM_BOT_TOKEN`; `TELEGRAM_BOT_TOKEN` is reserved for the Dopamine reporting bot.
+
+Generated AI apps should support OpenRouter by default with `OPENROUTER_KEY`, optional `OPENAI_API_KEY` fallback, `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and configurable `OPENAI_MODEL`.
