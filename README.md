@@ -173,3 +173,35 @@ Every completed run writes `_report.txt` in the run directory and sends the same
 Telegram bot projects are not auto-deployed. Their reports show the required environment variables and run command instead. Generated Telegram bot projects must use `PROJECT_TELEGRAM_BOT_TOKEN`; `TELEGRAM_BOT_TOKEN` is reserved for the Dopamine reporting bot.
 
 Generated AI apps should support OpenRouter by default with `OPENROUTER_KEY`, optional `OPENAI_API_KEY` fallback, `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and configurable `OPENAI_MODEL`.
+
+## Static web auto-deploy
+
+Approved `static_web` projects are deployed automatically to Vercel when all conditions are true:
+
+- the project is approved
+- `project_type` is `static_web` or `static_site`
+- the generated folder contains `index.html` or `public/index.html`
+- `VERCEL_TOKEN` exists in `/home/ubuntu/pipeline/.env`
+- `npx` is installed
+
+Telegram bot projects, Python API projects, and unknown project types are not auto-deployed yet. Their reports show setup/run instructions instead.
+
+The pipeline chain is:
+
+research → brainstorm → architect → build → review → save → deploy → report
+
+## Static web auto-deploy
+
+Approved `static_web` projects are deployed automatically to Vercel when all conditions are true:
+
+- the project is approved
+- `project_type` is `static_web` or `static_site`
+- the generated folder contains `index.html` or `public/index.html`
+- `VERCEL_TOKEN` exists in `/home/ubuntu/pipeline/.env`
+- `npx` is installed
+
+Telegram bot projects, Python API projects, and unknown project types are not auto-deployed yet. Their reports show setup/run instructions instead.
+
+The pipeline chain is:
+
+research → brainstorm → architect → build → review → save → deploy → report

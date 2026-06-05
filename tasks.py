@@ -7,6 +7,8 @@ import os
 import re
 import json
 import logging
+import subprocess
+import shutil
 from datetime import datetime, date
 from celery import Celery, chain
 from openai import OpenAI
@@ -347,6 +349,81 @@ def important_files_for_review(files: dict) -> dict:
     return important or files
 
 
+def _extract_vercel_url(output: str) -> str:
+    urls = re.findall(r"https://[^\s]+\.vercel\.app[^\s]*", output or "")
+    if not urls:
+        return ""
+    # Prefer production URL over inspect/log URLs
+    non_inspect = [u.strip().rstrip(".,)") for u in urls if "inspect" not in u.lower()]
+    return (non_inspect or urls)[-1].strip().rstrip(".,)")
+
+
+def _static_entry_exists(project_dir: str) -> bool:
+    return (
+        os.path.exists(os.path.join(project_dir, "index.html"))
+        or os.path.exists(os.path.join(project_dir, "public", "index.html"))
+    )
+
+
+def deploy_static_build_to_vercel(build: dict) -> dict:
+    """
+    Deploy approved static_web projects to Vercel.
+
+    Only handles simple static projects. Telegram bots, Python APIs, and unknown
+    projects are intentionally skipped.
+    """
+    spec = build.get("spec", {})
+    project_type = spec.get("project_type", "unknown")
+    project_dir = build.get("folder_path", "")
+
+    if not build.get("approved"):
+        return {"status": "skipped", "url": "", "error": "Build not approved."}
+
+    if project_type not in {"static_web", "static_site"}:
+        return {"status": "skipped", "url": "", "error": f"Project type {project_type} is not static_web."}
+
+    if not project_dir or not os.path.isdir(project_dir):
+        return {"status": "failed", "url": "", "error": "Project folder does not exist."}
+
+    if not _static_entry_exists(project_dir):
+        return {"status": "failed", "url": "", "error": "No index.html or public/index.html found."}
+
+    token = os.environ.get("VERCEL_TOKEN", "")
+    if not token:
+        return {"status": "skipped", "url": "", "error": "VERCEL_TOKEN not configured."}
+
+    if not shutil.which("npx"):
+        return {"status": "failed", "url": "", "error": "npx is not installed."}
+
+    cmd = ["npx", "--yes", "vercel@latest", "deploy", "--prod", "--yes", "--token", token]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=project_dir,
+            text=True,
+            capture_output=True,
+            timeout=240,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "url": "", "error": "Vercel deploy timed out after 240s."}
+    except Exception as exc:
+        return {"status": "failed", "url": "", "error": f"Vercel deploy exception: {exc}"}
+
+    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    url = _extract_vercel_url(output)
+
+    if result.returncode == 0 and url:
+        return {"status": "deployed", "url": url, "error": ""}
+
+    return {
+        "status": "failed",
+        "url": url,
+        "error": f"Vercel deploy failed with code {result.returncode}: {output[-1200:]}",
+    }
+
+
 @app.task(name="pipeline.research")
 def research_task(payload):
     logger.info("🔍 RESEARCH agent starting")
@@ -511,6 +588,44 @@ def save_task(payload):
     return payload
 
 
+@app.task(name="pipeline.deploy")
+def deploy_task(payload):
+    logger.info("🚀 DEPLOY agent starting")
+    deployed = 0
+    skipped = 0
+    failed = 0
+
+    for build in payload.get("builds", []):
+        title = build.get("spec", {}).get("idea", {}).get("title", "Untitled")
+
+        if not build.get("approved"):
+            skipped += 1
+            continue
+
+        result = deploy_static_build_to_vercel(build)
+        build["deployment"] = result
+        enrich_build_report_metadata(build, build.get("folder_path"))
+
+        status = result.get("status")
+        if status == "deployed":
+            deployed += 1
+            logger.info(f"   ✅ Deployed {title}: {result.get('url')}")
+        elif status == "skipped":
+            skipped += 1
+            logger.info(f"   ⏭️  Skipped {title}: {result.get('error')}")
+        else:
+            failed += 1
+            logger.warning(f"   ❌ Deploy failed for {title}: {result.get('error')}")
+
+    payload["deploy_summary"] = {
+        "deployed": deployed,
+        "skipped": skipped,
+        "failed": failed,
+    }
+    logger.info(f"   → deploy summary: {payload['deploy_summary']}")
+    return payload
+
+
 @app.task(name="pipeline.report")
 def report_task(payload):
     logger.info("📋 REPORT agent starting")
@@ -544,6 +659,7 @@ def run_pipeline(topic=None):
         build_task.s(),
         review_task.s(),
         save_task.s(),
+        deploy_task.s(),
         report_task.s(),
     )
     result = pipeline.apply_async()
