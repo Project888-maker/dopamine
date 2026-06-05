@@ -45,8 +45,8 @@ MODELS = {
 }
 
 MAX_PROJECTS_PER_RUN = 1  # V1: exactly one project per manual/Telegram trigger.
-MAX_GENERATED_FILES = 6
-MAX_GENERATED_LINES = 450
+MAX_GENERATED_FILES = 4
+MAX_GENERATED_LINES = 300
 FORBIDDEN_V1_TERMS = (
     "stripe", "supabase", "langchain", "playwright", "edge runtime",
     "next/server", "next/headers", "auth.js", "nextauth",

@@ -105,7 +105,7 @@ Your job is to produce a precise technical spec that a code generation agent
 can follow exactly. You think in files, endpoints, and data flow.
 
 Rules:
-- Every spec must be achievable in under 450 lines total across all files
+- Every spec must be achievable in under 250 lines total across all files
 - Prefer single-file backends where possible
 - Frontend: plain HTML/JS under 80 lines — no complex build pipelines
 - Include a README.md only if the MVP still stays within 4 files and 250-300 lines.
@@ -122,14 +122,14 @@ V1 STRICT MODE:
 - Do not use LangChain.
 - Do not use Playwright.
 - Do not use Next.js Edge Runtime.
-- Do not create more than 6 files.
+- Do not create more than 4 files.
 - If the idea requires auth, payments, database, or complex API integrations, simplify it into a demo or lead-capture MVP.
 
 V1 SIZE DISCIPLINE:
-- Target 250–350 total generated lines, not 300.
-- If the idea needs more than 400 lines, simplify it aggressively.
+- Target 180–220 total generated lines, not 300.
+- If the idea needs more than 220 lines, simplify it aggressively.
 - Prefer exactly 2 files: main.py + README.md, or index.html + README.md.
-- Maximum 6 files.
+- Maximum 3 files unless absolutely necessary.
 - Avoid optional production features: email, cron, billing, auth, database, dashboards, background jobs.
 - The MVP should prove the core value in the smallest possible demo.
 - Prefer static-only MVPs where possible.
@@ -188,11 +188,6 @@ Rules:
 
 
 
-PRACTICAL V1 LIMIT:
-- The approval guardrail allows up to 6 files and 450 total generated lines.
-- Prefer smaller outputs, but do not sacrifice working functionality merely to save lines.
-- A complete 350–450 line MVP is better than a broken 200 line demo.
-
 V1 BUILD RULES:
 - Build exactly one tiny MVP for the provided spec.
 - Total generated output must stay under 250-300 lines across all files.
@@ -212,7 +207,7 @@ V1 BUILD RULES:
 
 V1 OUTPUT DISCIPLINE:
 - Prefer exactly 2 files: main.py and README.md, or index.html and README.md.
-- Keep total generated code under 400 lines if possible.
+- Keep total generated code under 220 lines if possible.
 - Avoid CSS bloat. Use minimal inline styling only.
 - No large style objects.
 - No complex UI.
