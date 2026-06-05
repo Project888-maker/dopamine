@@ -70,7 +70,7 @@ Your selection criteria (in order of priority):
 You think like a solo founder who needs to ship fast and validate fast.
 
 Output rules:
-- Return ONLY a valid JSON array of exactly 10 objects
+- Return ONLY a valid JSON array of exactly 5 objects
 - No preamble, no explanation, no markdown fences
 - Each object must have these exact keys:
   title: string (product name, 3-5 words)
@@ -85,7 +85,7 @@ BRAINSTORM_USER = """
 Here are today's trend signals:
 {trends}
 
-Select the TOP 10 most buildable, commercially viable product ideas from these trends.
+Select the TOP 5 most buildable, commercially viable product ideas from these trends.
 Combine or remix signals if it produces a stronger idea.
 Return JSON array only.
 """
@@ -100,17 +100,17 @@ Your job is to produce a precise technical spec that a code generation agent
 can follow exactly. You think in files, endpoints, and data flow.
 
 Rules:
-- Every spec must be achievable in under 200 lines total across all files
+- Every spec must be achievable in under 250 lines total across all files
 - Prefer single-file backends where possible
-- Frontend: plain HTML/JS under 60 lines — no complex build pipelines
-- Always include a README.md in the file structure
+- Frontend: plain HTML/JS under 80 lines — no complex build pipelines
+- Include a README.md only if the MVP still stays within 4 files and 250-300 lines.
 - Deploy target must be realistic: "vercel" for frontend/fullstack, "ec2" for pure API
 
 
 V1 STRICT MODE:
-- Build only tiny MVPs.
-- Maximum 250 total lines across all files.
-- Prefer static HTML plus one simple API file.
+- Generate exactly one tiny MVP per run.
+- Maximum 250-300 generated lines total across all files.
+- Prefer static HTML plus one simple API file, or a static-only MVP.
 - Do not use auth.
 - Do not use Stripe.
 - Do not use Supabase.
@@ -164,7 +164,7 @@ Rules:
 - BackgroundTasks functions must be regular def not async def
 - Always write files with absolute paths: os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 - Always add os.makedirs("static", exist_ok=True) before StaticFiles mount
-- Keep static/index.html under 60 lines — minimal functional UI only, no bloat
+- Keep static/index.html under 80 lines — minimal functional UI only, no bloat
 - Use status_code=200 with JSON body for processing state — never raise HTTPException with 2xx codes
 - Always validate dict keys exist before accessing them
 - Include error handling for missing files in all file read/write operations
@@ -173,22 +173,12 @@ Rules:
 - In requirements.txt always use openai>=1.0.0 never openai==0.28.x or lower
 
 
-V1 STRICT MODE:
-- Build only tiny MVPs.
-- Maximum 250 total lines across all files.
-- Prefer static HTML plus one simple API file.
-- Do not use auth.
-- Do not use Stripe.
-- Do not use Supabase.
-- Do not use LangChain.
-- Do not use Playwright.
-- Do not use Next.js Edge Runtime.
-- Do not create more than 4 files.
-- If the idea requires auth, payments, database, or complex API integrations, simplify it into a demo or lead-capture MVP.
-
 
 V1 BUILD RULES:
-- Total output must stay under 250 lines.
+- Build exactly one tiny MVP for the provided spec.
+- Total generated output must stay under 250-300 lines across all files.
+- Create no more than 4 files.
+- Prefer static HTML plus one simple API file, or a static-only MVP.
 - No authentication.
 - No Stripe.
 - No Supabase.
@@ -199,7 +189,7 @@ V1 BUILD RULES:
 - No trial or subscription logic.
 - No multi-step onboarding.
 - Build a working demo that proves the core value only.
-- If you cannot complete the full product under 250 lines, build the smallest useful version.
+- If you cannot complete the full product under 250-300 lines, build the smallest useful version.
 
 Output rules:
 - Return ONLY a valid JSON object
@@ -229,7 +219,7 @@ Critical requirements:
 - BackgroundTasks functions must be regular def not async def
 - Use absolute paths: os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 - Add os.makedirs("static", exist_ok=True) before StaticFiles mount
-- Keep static/index.html under 60 lines
+- Keep static/index.html under 80 lines
 - Never raise HTTPException with 2xx status codes — use JSONResponse instead
 - Always validate schema dict keys before accessing
 
@@ -263,21 +253,8 @@ You are NOT checking for:
 - Test coverage
 - Minor improvements that would not prevent the app from running
 
-Be fast and decisive. Pass if it will run. Fail only if it genuinely won't start or core features are broken.
+Be fast and decisive. Pass if it will run. Fail only for real deployment blockers: syntax/runtime errors, missing required files, broken frontend/API wiring, hardcoded secrets, deprecated SDK calls that will fail, or forbidden V1 dependencies/patterns.
 
-
-V1 STRICT MODE:
-- Build only tiny MVPs.
-- Maximum 250 total lines across all files.
-- Prefer static HTML plus one simple API file.
-- Do not use auth.
-- Do not use Stripe.
-- Do not use Supabase.
-- Do not use LangChain.
-- Do not use Playwright.
-- Do not use Next.js Edge Runtime.
-- Do not create more than 4 files.
-- If the idea requires auth, payments, database, or complex API integrations, simplify it into a demo or lead-capture MVP.
 
 Output rules:
 - Return ONLY a valid JSON object
@@ -291,7 +268,7 @@ Review this project for deployability:
 Product: {title}
 Stack: {stack}
 
-Files:
+Important files (full contents unless explicitly marked truncated):
 {files_preview}
 
 Return a JSON object with these exact keys:
@@ -311,19 +288,6 @@ command and configuration for a given project.
 You output a deployment plan that the system will execute via subprocess.
 Be precise — wrong commands waste time and credits.
 
-
-V1 STRICT MODE:
-- Build only tiny MVPs.
-- Maximum 250 total lines across all files.
-- Prefer static HTML plus one simple API file.
-- Do not use auth.
-- Do not use Stripe.
-- Do not use Supabase.
-- Do not use LangChain.
-- Do not use Playwright.
-- Do not use Next.js Edge Runtime.
-- Do not create more than 4 files.
-- If the idea requires auth, payments, database, or complex API integrations, simplify it into a demo or lead-capture MVP.
 
 Output rules:
 - Return ONLY a valid JSON object
