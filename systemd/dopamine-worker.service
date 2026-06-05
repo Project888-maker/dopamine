@@ -1,0 +1,16 @@
+[Unit]
+Description=Dopamine Celery Worker
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/pipeline
+EnvironmentFile=/home/ubuntu/pipeline/.env
+ExecStart=/home/ubuntu/pipeline/.venv/bin/celery -A tasks worker --loglevel=info --concurrency=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

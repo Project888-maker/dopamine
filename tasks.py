@@ -6,13 +6,13 @@ Saves output to /home/ubuntu/pipeline/runs/<timestamp>/
 import os
 import re
 import json
-import time
 import logging
 from datetime import datetime, date
 from celery import Celery, chain
 from openai import OpenAI
 
 from prompts import get_prompt
+from notifier import send_pipeline_summary
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -44,7 +44,13 @@ MODELS = {
     "report":     "google/gemini-2.5-flash",
 }
 
-MAX_PROJECTS_PER_RUN = 3  # Start small. Scale up later.
+MAX_PROJECTS_PER_RUN = 1  # V1: exactly one project per manual/Telegram trigger.
+MAX_GENERATED_FILES = 4
+MAX_GENERATED_LINES = 300
+FORBIDDEN_V1_TERMS = (
+    "stripe", "supabase", "langchain", "playwright", "edge runtime",
+    "next/server", "next/headers", "auth.js", "nextauth",
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,6 +105,40 @@ def parse_build_output(raw: str) -> dict:
             files[fname] = content
         return files
     raise ValueError("Build output parse failed")
+
+
+def count_generated_lines(files: dict) -> int:
+    return sum(len(str(content).splitlines()) for content in files.values())
+
+
+def validate_v1_build(files: dict) -> list[str]:
+    issues = []
+    if len(files) > MAX_GENERATED_FILES:
+        issues.append(f"Generated {len(files)} files; V1 allows at most {MAX_GENERATED_FILES}.")
+    line_count = count_generated_lines(files)
+    if line_count > MAX_GENERATED_LINES:
+        issues.append(f"Generated {line_count} lines; V1 allows at most {MAX_GENERATED_LINES}.")
+    combined = "\n".join(str(content).lower() for content in files.values())
+    for term in FORBIDDEN_V1_TERMS:
+        if term in combined:
+            issues.append(f"Uses forbidden V1 dependency/pattern: {term}.")
+    return issues
+
+
+def important_files_for_review(files: dict) -> dict:
+    preferred_names = {
+        "main.py", "app.py", "server.py", "index.js", "api/index.js",
+        "static/index.html", "index.html", "package.json", "requirements.txt",
+        "README.md", "vercel.json",
+    }
+    important = {}
+    for name in sorted(files):
+        content = str(files[name])
+        is_important = name in preferred_names or name.endswith((".py", ".js", ".html", ".json", ".txt"))
+        if not is_important:
+            continue
+        important[name] = (content[:20000] + "\n...[truncated after 20000 chars]") if len(content) > 20000 else content
+    return important or files
 
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
@@ -172,8 +212,11 @@ def build_task(payload):
         try:
             raw = call_llm("build", system, user, temperature=0.2)
             files = parse_build_output(raw)
-            builds.append({"spec": spec, "files": files, "approved": False})
-            logger.info(f"   ✅ Built {idea['title']} ({sum(len(c.splitlines()) for c in files.values())} lines)")
+            v1_issues = validate_v1_build(files)
+            builds.append({"spec": spec, "files": files, "approved": False, "v1_issues": v1_issues})
+            if v1_issues:
+                logger.warning(f"   ⚠️  Built {idea['title']} with V1 issues: {'; '.join(v1_issues)}")
+            logger.info(f"   ✅ Built {idea['title']} ({count_generated_lines(files)} lines)")
         except Exception as e:
             logger.warning(f"   ❌ Build failed for {idea['title']}: {e}")
     payload["builds"] = builds
@@ -188,21 +231,21 @@ def review_task(payload):
         title = build["spec"]["idea"]["title"]
         logger.info(f"   [{i}/{len(payload['builds'])}] Reviewing {title}")
 
-        files_preview = {}
-        for k, v in build["files"].items():
-            if k == "main.py" or k.endswith(".py") and not files_preview.get("main.py"):
-                files_preview[k] = v
-            else:
-                files_preview[k] = v[:500]
+        files_for_review = important_files_for_review(build["files"])
 
         system, user = get_prompt("review",
             title=title,
             stack=build["spec"]["idea"]["stack"],
-            files_preview=json.dumps(files_preview, indent=2),
+            files_preview=json.dumps(files_for_review, indent=2),
         )
         try:
             raw = call_llm("review", system, user, temperature=0.1)
             result = parse_json(raw)
+            v1_issues = build.get("v1_issues", [])
+            if v1_issues:
+                result["pass"] = False
+                result["issues"] = list(result.get("issues", [])) + v1_issues
+                result["verdict"] = "Rejected by V1 guardrails: " + "; ".join(v1_issues)
             build["review"] = result
             build["approved"] = bool(result.get("pass"))
             status = "✅ PASS" if build["approved"] else "❌ FAIL"
@@ -272,13 +315,10 @@ def report_task(payload):
         print(f"     → {verdict}")
     print("="*60 + "\n")
 
-    # Send Telegram notification
-    try:
-        from telegram_bot import send_pipeline_complete_notification
-        send_pipeline_complete_notification(payload)
+    if send_pipeline_summary(payload):
         logger.info("📨 Telegram notification sent")
-    except Exception as e:
-        logger.warning(f"⚠️  Telegram notification failed: {e}")
+    else:
+        logger.info("📭 Telegram notification skipped or failed")
 
     return payload
 

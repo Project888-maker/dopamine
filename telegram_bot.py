@@ -80,7 +80,8 @@ async def cmd_run(update, context):
     await update.message.reply_text("🏭 Pipeline launching… check back in ~10 min.")
     try:
         from tasks import run_pipeline
-        result = run_pipeline()
+        topic = " ".join(context.args).strip() or None
+        result = run_pipeline(topic)
         await update.message.reply_text(f"✅ Queued: `{result.id}`", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Failed: {e}")
